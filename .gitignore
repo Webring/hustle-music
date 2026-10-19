@@ -1,0 +1,7 @@
+# сборка одним файлом — артефакт, собирается командой npm run build:html
+/index.html
+hustle-player.html
+
+# кеш и отчёт скрипта сборки базы треков
+scripts/.cache/
+scripts/ym-unmatched.json
