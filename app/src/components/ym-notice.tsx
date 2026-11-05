@@ -1,13 +1,17 @@
 import { CircleAlert, Info, X } from "lucide-react"
 import { clearYmIssue, dismissYmIssue, useYmIssue, type YmIssue } from "@/lib/ym-status"
+import { openYmHelp } from "@/lib/ym-help"
 import { YM_ORIGIN } from "@/lib/ym-widget"
 import { cn } from "@/lib/utils"
+
+type Action = { label: string; href?: string; onClick?: () => void }
 
 type Message = {
   title: string
   text: string
   tone: "error" | "info"
-  action?: { label: string; href?: string; onClick?: () => void }
+  action?: Action
+  secondary?: Action
   close?: "dismiss" | "clear" // dismiss — не показывать до перезагрузки, clear — просто убрать
 }
 
@@ -33,9 +37,10 @@ const MESSAGES: Record<YmIssue, Message> = {
   },
   preview: {
     title: "Играют только отрывки по 30 секунд",
-    text: "Чтобы слушать целиком, войдите в Яндекс Музыку с Плюсом в этом браузере и обновите страницу. Уже вошли — разрешите сторонние cookie для music.yandex.ru.",
+    text: "Чтобы слушать целиком, войдите в Яндекс Музыку с Плюсом и разрешите ей сторонние cookie. Уже вошли, а всё равно отрывки — скорее всего, браузер не отдаёт плееру ваш вход (так делает Safari). В инструкции расписано, что включить.",
     tone: "info",
-    action: { label: "Войти в Яндекс Музыку", href: YM_ORIGIN },
+    action: { label: "Посмотреть инструкцию ещё раз", onClick: openYmHelp },
+    secondary: { label: "Войти в Яндекс Музыку", href: YM_ORIGIN },
     close: "dismiss",
   },
   unavailable: {
@@ -68,11 +73,13 @@ export function YmNotice({ className }: { className?: string }) {
         <div className="text-sm font-medium text-foreground">{m.title}</div>
         <p className="mt-0.5 text-muted-foreground">{m.text}</p>
         {m.action && (
-          <div className="mt-2 text-muted-foreground">
-            {m.action.href ? (
-              <a href={m.action.href} target="_blank" rel="noreferrer" className={link}>{m.action.label}</a>
-            ) : (
-              <button onClick={m.action.onClick} className={link}>{m.action.label}</button>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-muted-foreground">
+            {[m.action, m.secondary].map((a) =>
+              !a ? null : a.href ? (
+                <a key={a.label} href={a.href} target="_blank" rel="noreferrer" className={link}>{a.label}</a>
+              ) : (
+                <button key={a.label} onClick={a.onClick} className={link}>{a.label}</button>
+              ),
             )}
           </div>
         )}

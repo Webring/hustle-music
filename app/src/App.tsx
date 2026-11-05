@@ -5,6 +5,7 @@ import { TracksPage } from "@/pages/tracks-page"
 import { RepeaterPage } from "@/pages/repeater-page"
 import { setPage, usePage, type PageId } from "@/lib/nav"
 import { YmWidgetDock } from "@/components/ym-widget-frame"
+import { YmHelpDialog } from "@/components/ym-help-dialog"
 import { initSignal } from "@/lib/signal"
 import { useSettings } from "@/lib/settings"
 import { cn } from "@/lib/utils"
@@ -85,6 +86,9 @@ export default function App() {
 
       {/* Виджет Яндекс Музыки — один на всё приложение, через него идёт звук */}
       <YmWidgetDock />
+
+      {/* Инструкция «как слушать целиком»: сама открывается при первом заходе */}
+      <YmHelpDialog />
     </div>
   )
 }

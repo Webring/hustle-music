@@ -40,7 +40,7 @@ export default defineConfig(({ mode }) => {
     // Зависимости собираем заранее: иначе Vite пересобирает их на лету, и после
     // перезапуска dev-сервера в браузере оказываются две копии React.
     optimizeDeps: {
-      include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "@base-ui/react", "lucide-react", "class-variance-authority", "clsx", "tailwind-merge"],
+      include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "@base-ui/react", "@base-ui/react/dialog", "lucide-react", "class-variance-authority", "clsx", "tailwind-merge"],
     },
     // база треков (~220 КБ) встроена в бандл, поэтому порог предупреждения выше стандартного
     build: single
