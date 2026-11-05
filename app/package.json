@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "test": "node --test tests/*.test.ts",
     "preview": "vite preview",
     "build:html": "tsc -b && vite build --mode single && node -e \"require('fs').copyFileSync('dist-html/index.html','../index.html')\""
   },

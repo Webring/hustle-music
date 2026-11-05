@@ -1,6 +1,8 @@
 import { useSyncExternalStore } from "react"
 import { getSettings, type Interval } from "./settings"
-import { getTracks, type Track } from "./tracks"
+import { getTracks, type Track, type TrackSource } from "./tracks"
+import { fetchAudio, getAudioCredentials } from "./audio-source"
+import { fadeGain } from "./track-data"
 import { playSignal, stopSignal } from "./signal"
 import { isDisliked } from "./marks"
 import { claimAudio, registerAudio } from "./focus"
@@ -28,6 +30,7 @@ export type PlayerState = {
   time: number
   duration: number
   paused: boolean
+  error: string | null
 }
 
 class Player {
@@ -36,13 +39,31 @@ class Player {
   private wantId: string | null = null // какой трек мы попросили у виджета
   private failures = 0 // подряд недоступных треков — чтобы не крутиться бесконечно
   private startTimer: ReturnType<typeof setTimeout> | undefined
+  private audio = new Audio()
+  private context: AudioContext | null = null
+  private gain: GainNode | null = null
+  private audioUrl: string | null = null
+  private audioRequest: AbortController | null = null
   private s: Omit<PlayerState, "time" | "duration" | "paused"> = {
-    queue: [], qi: 0, status: "idle", elapsed: 0, previewId: null,
+    queue: [], qi: 0, status: "idle", elapsed: 0, previewId: null, error: null,
   }
   private snap: PlayerState = { ...this.s, time: 0, duration: 0, paused: true }
   private listeners = new Set<() => void>()
 
   constructor() {
+    this.audio.preload = "auto"
+    this.audio.addEventListener("playing", () => {
+      if (this.isDirect() && this.audioUrl && this.s.status === "loading") this.emit({ status: "playing", error: null })
+    })
+    this.audio.addEventListener("loadedmetadata", () => this.isDirect() && this.emit())
+    this.audio.addEventListener("ended", () => {
+      if (!this.isDirect() || this.s.status !== "playing") return
+      if (this.s.previewId != null) this.stop()
+      else this.advance()
+    })
+    this.audio.addEventListener("error", () => {
+      if (this.isDirect() && this.audioUrl) this.emit({ status: "paused", error: "Браузер не смог воспроизвести аудиофайл. Проверьте ссылку и формат файла." })
+    })
     registerAudio("player", () => this.yieldAudio())
     ymWidget.on((e) => {
       if (e.type === "state") this.onWidgetState(e.trackId, e.status)
@@ -55,10 +76,11 @@ class Player {
       const dt = (now - last) / 1000
       last = now
       if (this.s.status === "playing") {
-        this.s.elapsed += dt
+        this.s.elapsed = this.isDirect() ? this.audio.currentTime : this.s.elapsed + dt
         const cfg = getSettings()
         if (cfg.timed && this.s.previewId == null && this.s.elapsed >= cfg.timedSec) this.advance()
       }
+      this.applyVolume()
       this.emit()
     }, 250)
   }
@@ -72,7 +94,7 @@ class Player {
     this.snap = {
       ...this.s,
       time: this.s.status === "idle" ? 0 : this.s.elapsed,
-      duration: t?.durationMs ? t.durationMs / 1000 : 0,
+      duration: this.isDirect() && Number.isFinite(this.audio.duration) ? this.audio.duration : t?.durationMs ? t.durationMs / 1000 : 0,
       paused: this.s.status !== "playing" && this.s.status !== "loading",
     }
     this.listeners.forEach((fn) => fn())
@@ -83,9 +105,76 @@ class Player {
     return id == null ? undefined : getTracks().byId.get(id)
   }
 
+  private isDirect() { return this.current()?.source === "audio" }
+
+  private unlockAudio() {
+    if (!this.context) {
+      this.context = new AudioContext()
+      this.gain = this.context.createGain()
+      this.context.createMediaElementSource(this.audio).connect(this.gain).connect(this.context.destination)
+    }
+    return this.context.resume()
+  }
+
+  private applyVolume() {
+    if (!this.gain || !this.context || !this.isDirect()) return
+    const cfg = getSettings()
+    const limit = cfg.timed && this.s.previewId == null ? Math.min(this.audio.duration, cfg.timedSec) : this.audio.duration
+    const fade = cfg.fadeOut ? fadeGain(this.audio.currentTime, limit, cfg.fadeSec) : 1
+    this.gain.gain.setTargetAtTime(Math.max(0, Math.min(1, cfg.vol / 100)) * fade, this.context.currentTime, 0.04)
+  }
+
+  private releaseAudio() {
+    this.audioRequest?.abort()
+    this.audioRequest = null
+    this.audio.pause()
+    if (this.audioUrl) URL.revokeObjectURL(this.audioUrl)
+    this.audioUrl = null
+    this.audio.removeAttribute("src")
+    this.audio.load()
+  }
+
+  private async startAudio(t: Track, generation: number) {
+    const request = new AbortController()
+    this.audioRequest = request
+    const timeout = setTimeout(() => request.abort(new DOMException("Audio timeout", "TimeoutError")), 60_000)
+    try {
+      // resume вызывается в том же пользовательском действии, до загрузки файла.
+      await this.unlockAudio()
+      if (generation !== this.gen) return
+      const blob = await fetchAudio(t.url!, t.auth, getAudioCredentials(t.id), request.signal)
+      if (generation !== this.gen) return
+      this.audioUrl = URL.createObjectURL(blob)
+      this.audio.src = this.audioUrl
+      this.gain?.gain.setValueAtTime(Math.max(0, Math.min(1, getSettings().vol / 100)), this.context!.currentTime)
+      await this.audio.play()
+    } catch (error) {
+      if (generation !== this.gen) return
+      const message = request.signal.reason?.name === "TimeoutError" ? "Аудиофайл загружается слишком долго. Попробуйте ещё раз." : error instanceof DOMException && error.name === "NotAllowedError" ? "Нажмите «Играть» ещё раз, чтобы браузер разрешил звук." : error instanceof Error ? error.message : "Не удалось включить аудиофайл."
+      this.emit({ status: "paused", error: message })
+    } finally {
+      clearTimeout(timeout)
+      if (this.audioRequest === request) this.audioRequest = null
+    }
+  }
+
+  private async resumeAudio() {
+    if (!this.audioUrl) return this.startCurrent()
+    const generation = ++this.gen
+    this.emit({ status: "loading", error: null })
+    try {
+      await this.unlockAudio()
+      if (generation !== this.gen) return
+      this.applyVolume()
+      await this.audio.play()
+    } catch {
+      if (generation === this.gen) this.emit({ status: "paused", error: "Не удалось продолжить воспроизведение. Попробуйте включить трек заново." })
+    }
+  }
+
   // ---------- события виджета ----------
   private onWidgetState(trackId: string | null, status: string) {
-    if (trackId !== this.wantId || this.s.status === "idle" || this.s.status === "changing") return
+    if (this.isDirect() || trackId !== this.wantId || this.s.status === "idle" || this.s.status === "changing") return
     if (status === "PLAYING") {
       this.failures = 0
       this.waitStart(false)
@@ -108,9 +197,10 @@ class Player {
     else if (e > PREVIEW_SEC + 15) clearYmIssue("preview") // трек доиграл дальше 30 секунд — подписка есть
   }
 
-  private pauseWidget() {
+  private pauseSource() {
     this.waitStart(false)
     ymWidget.pause()
+    this.audio.pause()
   }
 
   // Ждём PLAYING после команды «играть»; не дождались — говорим, что трек не запускается
@@ -122,6 +212,7 @@ class Player {
 
   // Трек недоступен или не играет — берём следующий и коротко говорим об этом
   private onWidgetError() {
+    if (this.isDirect()) return
     if (this.s.status !== "loading" && this.s.status !== "playing") return
     raiseYmIssue("unavailable", 6_000)
     if (this.s.previewId != null) return this.emit({ previewId: null, status: "idle" })
@@ -133,11 +224,18 @@ class Player {
   // ---------- запуск трека ----------
   private startTrack(t: Track | undefined) {
     if (!t) return this.stop()
+    const generation = ++this.gen
+    this.pauseSource()
+    this.releaseAudio()
     this.wantId = t.id
     claimAudio("player")
+    this.emit({ status: "loading", elapsed: 0, error: null })
+    if (t.source === "audio") {
+      void this.startAudio(t, generation)
+      return
+    }
     ymWidget.playTracks([{ trackId: t.id, albumId: t.albumId, title: t.title, subtitle: t.artist }])
     this.waitStart(true)
-    this.emit({ status: "loading", elapsed: 0 })
   }
 
   private startCurrent() {
@@ -149,7 +247,7 @@ class Player {
     const g = ++this.gen
     this.pending = i
     this.emit({ status: "changing" })
-    this.pauseWidget()
+    this.pauseSource()
     if (getSettings().bta) await playSignal()
     if (g !== this.gen) return
     this.pending = null
@@ -178,7 +276,9 @@ class Player {
   private yieldAudio() {
     if (this.s.status === "changing") return this.stop()
     if (this.s.status === "playing" || this.s.status === "loading") {
-      this.pauseWidget()
+      this.gen++
+      this.audioRequest?.abort()
+      this.pauseSource()
       this.emit({ status: "paused" })
     }
   }
@@ -202,11 +302,14 @@ class Player {
     if (this.s.status === "changing" && this.pending != null) return this.switchTo(this.pending)
     if (this.s.status === "paused") {
       claimAudio("player")
+      if (this.isDirect()) return void this.resumeAudio()
       ymWidget.resume()
       this.waitStart(true)
       this.emit({ status: "loading" }) // время пойдёт, когда виджет подтвердит PLAYING
     } else {
-      this.pauseWidget()
+      this.gen++
+      this.audioRequest?.abort()
+      this.pauseSource()
       this.emit({ status: "paused" })
     }
   }
@@ -257,13 +360,26 @@ class Player {
     this.emit({ qi })
   }
 
+  forgetTrack(id: string) {
+    if (this.s.previewId === id) this.stop()
+    this.removeFromQueue(id)
+  }
+
+  seek(time: number) {
+    if (!this.isDirect() || !this.audioUrl || !Number.isFinite(this.audio.duration)) return
+    this.audio.currentTime = Math.max(0, Math.min(time, this.audio.duration))
+    this.emit({ elapsed: this.audio.currentTime })
+    this.applyVolume()
+  }
+
   stop() {
     this.gen++
     this.pending = null
     this.wantId = null
-    if (this.s.status !== "idle") this.pauseWidget()
+    if (this.s.status !== "idle") this.pauseSource()
+    this.releaseAudio()
     stopSignal()
-    this.emit({ status: "idle", elapsed: 0, previewId: null })
+    this.emit({ status: "idle", elapsed: 0, previewId: null, error: null })
   }
 
   // Прослушивание из базы треков — вне очереди
@@ -280,8 +396,11 @@ class Player {
 export const player = new Player()
 export const usePlayer = () => useSyncExternalStore(player.subscribe, player.getSnapshot)
 
-export function buildQueue(tracks: Track[], intervals: Interval[], shuffle: boolean) {
-  const list = tracks.filter((t) => !isDisliked(t.id) && intervals.some((i) => t.bpm >= i.from && t.bpm <= i.to))
+export function buildQueue(tracks: Track[], intervals: Interval[], shuffle: boolean, source: TrackSource = "all", tags: string[] = []) {
+  const list = tracks.filter((t) => !isDisliked(t.id)
+    && intervals.some((i) => t.bpm >= i.from && t.bpm <= i.to)
+    && (source === "all" || (source === "custom" ? t.custom : source === "audio" ? t.source === "audio" : t.source !== "audio"))
+    && tags.every((tag) => t.tags?.some((value) => value.toLocaleLowerCase("ru") === tag.toLocaleLowerCase("ru"))))
   if (shuffle) {
     for (let i = list.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1))

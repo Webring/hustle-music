@@ -2,7 +2,7 @@
 
 **English** · [Русский](README.ru.md)
 
-A practice player for hustle dancers. It picks tracks by tempo (BPM) and plays them through the **Yandex Music** widget. It is a static web app: no backend, no accounts, nothing to host except files.
+A practice player for hustle dancers. It picks tracks by tempo (BPM) and plays them through the **Yandex Music** widget or direct audio URLs. It is a static web app: no backend, no accounts, nothing to host except files.
 
 **Live demo:** https://webring.github.io/hustle-music/
 
@@ -13,6 +13,11 @@ A practice player for hustle dancers. It picks tracks by tempo (BPM) and plays t
 - **Player** — one or several BPM ranges (double sliders), shuffle, "Pick tracks", a 90-second pass mode and single-track repeat. Ranges are stored in the URL, e.g. `#bpm=92-118,91-119`, so a setup can be shared as a link.
 - **"Bring the action" signal** — plays when the track changes automatically (the track ended or the 90 seconds ran out). Manual skips are instant and silent. A default sound is bundled; you can pick your own file (kept in IndexedDB).
 - **Tracks** — the whole database with search, sorting, an "All / Likes / Dislikes" filter, click-to-play and a link to the track in Yandex Music.
+- **My tracks** — add Yandex links in `/album/…/track/…` format or direct audio URLs. BPM is required; title, artist and tags are optional. Edit and delete your entries. An existing catalog track gets your BPM and tags without appearing twice.
+- **Tags** — edit tags on any track, search and filter the list, and select multiple tags for a practice queue. Tracks must match every selected tag. Queues can use all tracks, Yandex, audio URLs, or your own entries.
+- **JSON** — the library and tags persist in localStorage. Download a compact, single-line JSON file and import it to merge with the current library; matching IDs are updated.
+- **Audio authentication** — Bearer, Basic and API key headers. Credentials stay in the current tab's sessionStorage and are excluded from JSON; enter them again after importing elsewhere. The audio server must allow CORS for the app origin and selected headers. Audio is downloaded into memory before playback.
+- **Fade-out** — direct audio URLs fade out over the last 1–30 seconds, before the track ends or the 90-second limit. These tracks also support seeking. Fades use Web Audio; the app cannot control the Yandex widget's volume.
 - **Likes and dislikes** — a like just marks a track. A disliked track never enters the player but stays in the list. Stored in the browser.
 - **Repeater** — loop an A–B section of **your own audio file**. Yandex tracks are not available there because the widget cannot seek.
 - **Widget display** — the Yandex widget can be a floating window, embedded in the player card, a small "Yandex Music" button, or fully hidden (palette menu → "Yandex widget").
@@ -21,7 +26,7 @@ A practice player for hustle dancers. It picks tracks by tempo (BPM) and plays t
 
 ## Quick start
 
-Requires Node.js 22+.
+Requires Node.js 22.18+.
 
 ```bash
 cd app
@@ -35,6 +40,7 @@ npm run dev          # http://localhost:5173
 | `npm run build` | static build into `app/dist` — host it anywhere |
 | `npm run build:html` | the whole app as a single `index.html` in the project root (~0.9 MB) |
 | `npm run lint` | lint |
+| `npm test` | library, JSON, authentication and fade checks |
 
 Things to know:
 
@@ -77,7 +83,7 @@ The script searches each track in Yandex Music and compares artist and title. Re
 
 Control goes through `postMessage` in the `display=bandlink-wiki` mode. This is an **undocumented partner integration**; Yandex may change or close it. For production use, agree on access with Yandex Music.
 
-The protocol offers a track queue, pause, resume, next, previous and status events (`PLAYING`, `PAUSED`, `ENDED`, …). There is **no seek, no volume and no playback position**, so the on-screen time is counted by the app, there are no fade-outs, and volume is set in the widget itself or by the system.
+The protocol offers a track queue, pause, resume, next, previous and status events (`PLAYING`, `PAUSED`, `ENDED`, …). There is **no seek, no volume and no playback position**, so Yandex playback time is counted by the app, Yandex tracks have no fade-outs, and volume is set in the widget itself or by the system. These limitations do not apply to direct audio URLs.
 
 ## Project layout
 
@@ -86,7 +92,9 @@ The protocol offers a track queue, pause, resume, next, previous and status even
 | `app/src/lib/ym-widget.ts` | Yandex Music widget protocol (postMessage) |
 | `app/src/lib/ym-status.ts` | detection of Yandex Music problems |
 | `app/src/lib/player.ts` | player engine: queue, 90-second mode, signal, widget commands |
-| `app/src/lib/tracks.ts` | track database access |
+| `app/src/lib/tracks.ts` | catalog, custom library, tags and JSON |
+| `app/src/lib/track-data.ts` | library schema and validation |
+| `app/src/lib/audio-source.ts` | authenticated audio loading |
 | `app/src/lib/signal.ts` | "Bring the action": default or custom sound |
 | `app/src/lib/repeater.ts` | repeater for your own files |
 | `app/src/lib/marks.ts` | likes and dislikes |

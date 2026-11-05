@@ -13,10 +13,13 @@ import { cn } from "@/lib/utils"
 import { buildQueue, player, usePlayer } from "@/lib/player"
 import { intervalsToHash, setSettings, useSettings, type Interval } from "@/lib/settings"
 import { coverUrl, trackLabel, useTracks } from "@/lib/tracks"
+import { normalizeTags, type Track, type TrackSource } from "@/lib/track-data"
+import { selectClass } from "@/components/track-dialog"
 import { getSignalName, playSignal, setCustomSignal, subscribeSignal } from "@/lib/signal"
 
 const fmt = (s: number) => (isFinite(s) && s >= 0 ? `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}` : "0:00")
-const signature = (intervals: Interval[], shuffle: boolean) => JSON.stringify([intervals, shuffle])
+const signature = (intervals: Interval[], shuffle: boolean, source: TrackSource, tags: string[], tracks: Track[]) =>
+  JSON.stringify([intervals, shuffle, source, tags, tracks.map((t) => [t.id, t.bpm, t.tags, t.custom, t.source])])
 let lastBuilt: string | null = null // переживает переключение страниц
 
 function SectionTitle({ children, aside }: { children: React.ReactNode; aside?: React.ReactNode }) {
@@ -76,7 +79,7 @@ function OptionRow({ title, hint, checked, onChange, children }: {
         {hint && <div className="mt-0.5 text-xs text-muted-foreground">{hint}</div>}
         {children}
       </div>
-      <Switch checked={checked} onCheckedChange={(v) => onChange(v)} className="mt-0.5" />
+      <Switch aria-label={title} checked={checked} onCheckedChange={(v) => onChange(v)} className="mt-0.5" />
     </div>
   )
 }
@@ -98,6 +101,8 @@ export function PlayerPage() {
     seekTimer.current = setTimeout(() => setSeekHint(false), 2500)
   }
   const listRef = useRef<HTMLDivElement>(null)
+  const currentSignature = useMemo(() => signature(s.intervals, s.shuffle, s.trackSource, s.tags, tracks), [s.intervals, s.shuffle, s.trackSource, s.tags, tracks])
+  const availableTags = useMemo(() => normalizeTags([...s.tags, ...tracks.flatMap((t) => t.tags ?? [])]).sort((a, b) => a.localeCompare(b, "ru")), [tracks, s.tags])
 
   // Границы слайдера — по BPM из базы, как на сайте (70–129)
   const bounds = useMemo<[number, number]>(() => {
@@ -106,8 +111,8 @@ export function PlayerPage() {
   }, [tracks, s.intervals])
 
   const build = () => {
-    player.setQueue(buildQueue(tracks, s.intervals, s.shuffle))
-    lastBuilt = signature(s.intervals, s.shuffle)
+    player.setQueue(buildQueue(tracks, s.intervals, s.shuffle, s.trackSource, s.tags))
+    lastBuilt = currentSignature
     setBuilt(lastBuilt)
     history.replaceState(null, "", intervalsToHash(s.intervals))
   }
@@ -116,9 +121,10 @@ export function PlayerPage() {
     if (status === "ready" && lastBuilt == null) build()
   }, [status]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const dirty = built != null && built !== signature(s.intervals, s.shuffle)
+  const dirty = built != null && built !== currentSignature
   const active = p.status !== "idle" && p.previewId == null
   const cur = active ? byId.get(p.queue[p.qi]) : p.previewId != null ? byId.get(p.previewId) : undefined
+  const direct = cur?.source === "audio"
   const remaining = s.timed && active ? Math.max(0, s.timedSec - p.elapsed) : null
 
   useEffect(() => {
@@ -144,7 +150,7 @@ export function PlayerPage() {
     if (!query) return all
     return all.filter(({ id }) => {
       const t = byId.get(id)
-      return t && `${t.artist} ${t.title} ${t.bpm}`.toLowerCase().includes(query)
+      return t && `${t.artist} ${t.title} ${t.bpm} ${t.tags?.join(" ") ?? ""}`.toLowerCase().includes(query)
     })
   }, [p.queue, byId, query])
 
@@ -217,11 +223,15 @@ export function PlayerPage() {
             </div>
           </div>
 
-          <YmNotice className="mt-4" />
+          {!direct && <YmNotice className="mt-4" />}
+          {p.error && <p role="alert" className="mt-4 text-sm text-destructive">{p.error}</p>}
 
           {/* Перемотки в виджете Яндекс Музыки нет — это только индикатор. На попытку
               перемотать (клик или протяжка по полосе) коротко объясняем, почему нельзя. */}
-          <div className="mt-5 cursor-default py-1.5 -my-1.5" onPointerDown={showSeekHint}>
+          {direct ? <div className="mt-5">
+            <Slider aria-label="Позиция аудиотрека" min={0} max={p.duration || 1} step={0.1} value={[p.time]} disabled={!p.duration} onValueChange={(v) => player.seek((v as number[])[0])} />
+            <div className="mt-2 flex justify-between text-xs text-muted-foreground tabular"><span>{fmt(p.time)}</span><span>{fmt(p.duration)}</span></div>
+          </div> : <div className="mt-5 cursor-default py-1.5 -my-1.5" onPointerDown={showSeekHint}>
             <div className={cn("h-1 overflow-hidden rounded-full transition-colors", seekHint ? "bg-muted-foreground/25" : "bg-muted")}>
               <div className="h-full rounded-full bg-primary transition-[width] duration-300" style={{ width: `${p.duration ? Math.min(100, (p.time / p.duration) * 100) : 0}%` }} />
             </div>
@@ -235,7 +245,7 @@ export function PlayerPage() {
                 </>
               )}
             </div>
-          </div>
+          </div>}
 
           <div className="mt-4 flex items-center justify-between">
             <Button
@@ -261,13 +271,13 @@ export function PlayerPage() {
             </Button>
           </div>
 
-          {s.ymView === "embed" && <YmWidgetSlot className="mt-5" />}
+          {s.ymView === "embed" && !direct && <YmWidgetSlot className="mt-5" />}
 
           <Separator className="my-5" />
           <p className="text-xs leading-relaxed text-muted-foreground">
-            Музыка играет через Яндекс Музыку. Полные треки — если вы вошли в{" "}
+            {direct ? "Аудиофайл играет по вашей ссылке. Доступны перемотка и плавное затухание перед концом трека." : <>Музыка играет через Яндекс Музыку. Полные треки — если вы вошли в{" "}
             <a href="https://music.yandex.ru" target="_blank" rel="noreferrer" className="underline underline-offset-4 hover:text-foreground">аккаунт</a>{" "}
-            с Плюсом, иначе — отрывки по 30 секунд.
+            с Плюсом, иначе — отрывки по 30 секунд.</>}
           </p>
         </section>
 
@@ -275,11 +285,31 @@ export function PlayerPage() {
           <Button size="lg" variant={dirty ? "default" : "outline"} onClick={build} disabled={status !== "ready"} className="h-11 w-full">
             Подобрать треки
           </Button>
-          {dirty && <p className="mt-2 text-center text-xs text-muted-foreground">Настройки изменились — подберите треки заново</p>}
+          {dirty && <p className="mt-2 text-center text-xs text-muted-foreground">Настройки или библиотека изменились — подберите треки заново</p>}
         </div>
 
         <div className="min-h-0 flex-1 [scrollbar-width:thin] desk:-mr-4 desk:overflow-y-auto desk:pr-4">
           <div className="flex flex-col gap-8 border-t pt-6">
+            <section>
+              <SectionTitle>Музыка</SectionTitle>
+              <select aria-label="Источник подборки" className={selectClass} value={s.trackSource} onChange={(e) => setSettings({ trackSource: e.target.value as TrackSource })}>
+                <option value="all">Все треки</option>
+                <option value="yandex">Яндекс Музыка</option>
+                <option value="audio">Аудиофайлы по ссылкам</option>
+                <option value="custom">Мои треки</option>
+              </select>
+            </section>
+            {!!availableTags.length && <section>
+              <SectionTitle>Теги для подборки</SectionTitle>
+              <div className="flex max-h-36 flex-wrap gap-1.5 overflow-y-auto">
+                {availableTags.map((tag) => {
+                  const selected = s.tags.some((t) => t.toLocaleLowerCase("ru") === tag.toLocaleLowerCase("ru"))
+                  return <Button key={tag.toLocaleLowerCase("ru")} size="xs" variant={selected ? "secondary" : "outline"} aria-pressed={selected} onClick={() => setSettings({ tags: selected ? s.tags.filter((t) => t.toLocaleLowerCase("ru") !== tag.toLocaleLowerCase("ru")) : [...s.tags, tag] })}>{tag}</Button>
+                })}
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">{s.tags.length ? "В подборку попадут треки со всеми выбранными тегами." : "Без выбора — треки с любыми тегами."}</p>
+              {!!s.tags.length && <button onClick={() => setSettings({ tags: [] })} className="mt-1 text-xs text-muted-foreground underline underline-offset-4">Снять выбор тегов</button>}
+            </section>}
             <section>
               <SectionTitle>Темп</SectionTitle>
               <div className="space-y-5">
@@ -302,6 +332,13 @@ export function PlayerPage() {
               <SectionTitle>Параметры</SectionTitle>
               <div className="divide-y">
                 <OptionRow title="Случайный порядок" checked={s.shuffle} onChange={(v) => setSettings({ shuffle: v })} />
+                <OptionRow title="Плавное завершение" hint="Только аудиофайлы по ссылкам. У ЯМ нет управления громкостью." checked={s.fadeOut} onChange={(v) => setSettings({ fadeOut: v })}>
+                  {s.fadeOut && <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+                    Затухание за
+                    <Input aria-label="Длительность затухания" type="number" min={1} max={30} value={s.fadeSec} onChange={(e) => { const value = Number(e.target.value); if (Number.isFinite(value) && value >= 1 && value <= 30) setSettings({ fadeSec: value }) }} className="h-7 w-16" />
+                    сек.
+                  </label>}
+                </OptionRow>
                 <OptionRow
                   title="Bring the action"
                   hint={signalName ? `Звучит при смене трека · ${signalName}` : "Звучит при смене трека"}

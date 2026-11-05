@@ -37,6 +37,7 @@ export function MarkButtons({ id, mark, className }: { id: string; mark?: Mark; 
 
 // Открыть трек на сайте Яндекс Музыки
 export function OpenInYmButton({ track }: { track: Track }) {
+  if (track.source === "audio") return null
   return (
     <a
       href={ymTrackUrl(track)}

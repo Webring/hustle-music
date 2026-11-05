@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react"
+import type { TrackSource } from "./track-data"
 
 export type Interval = { from: number; to: number }
 
@@ -10,6 +11,10 @@ export type Settings = {
   repeat: boolean
   bta: boolean // Bring the action при смене трека
   vol: number
+  trackSource: TrackSource
+  tags: string[]
+  fadeOut: boolean
+  fadeSec: number
   ymView: YmView // как показывать виджет Яндекс Музыки
 }
 
@@ -27,6 +32,10 @@ const DEFAULTS: Settings = {
   repeat: false,
   bta: true,
   vol: 90,
+  trackSource: "all",
+  tags: [],
+  fadeOut: true,
+  fadeSec: 5,
   ymView: "button",
 }
 
@@ -52,6 +61,9 @@ function load(): Settings {
   }
   const s = { ...DEFAULTS, ...saved }
   if (!YM_VIEWS.includes(s.ymView)) s.ymView = DEFAULTS.ymView // режим из старой версии
+  if (!["all", "yandex", "audio", "custom"].includes(s.trackSource)) s.trackSource = "all"
+  if (!Array.isArray(s.tags) || !s.tags.every((tag) => typeof tag === "string")) s.tags = []
+  if (!Number.isFinite(s.fadeSec) || s.fadeSec < 1 || s.fadeSec > 30) s.fadeSec = 5
   const fromHash = intervalsFromHash()
   if (fromHash?.length) s.intervals = fromHash
   return s
